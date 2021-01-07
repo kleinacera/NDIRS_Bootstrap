@@ -1,0 +1,142 @@
+mport pandas as pd
+from bisect import *
+import math
+import dateutil
+import numpy as np
+import time
+import datetime
+import re
+
+#########################
+#method 1 is continuous 2 is linear
+def interpolate(df_input,max_days,df_output,method):       
+    df_output=pd.DataFrame(0.0, index=range(0,max_days), columns=["Date","Days","Rate","Discount"])
+    df_output["Date"]=df_output["Date"].apply(pd.to_datetime)
+    df_output["Days"]=range(0,max_days)
+    for index,row in df_input.iterrows():
+       df_output.at[df_output["Days"]==row["Days"],["Date"]]=row["Date"]
+       df_output.at[df_output["Days"]==row["Days"],["Rate"]]=row["Rate"]
+       df_output.at[df_output["Days"]==row["Days"],["Discount"]]=row["Discount"]
+    df_output.iloc[0]=[df_output.loc[1,"Date"]- dateutil.relativedelta.relativedelta(days=np.int(df_output.loc[1,"Days"])),0,0,1]  
+    for i in range(1,max_days):
+        if i not in df_input["Days"].values:
+            x2=int(i)
+            x1=int(df_input["Days"][bisect_left(df_input["Days"], i) - 1])
+            x3=int(df_input["Days"][bisect_right(df_input["Days"], i)])
+            y1=float(df_input["Rate"][bisect_left(df_input["Days"], i) - 1])
+            y3=float(df_input["Rate"][bisect_right(df_input["Days"], i)])
+            if method == 0:
+                y2=y1+(y3-y1)*(x2-x1)/(x3-x1)
+            if method == 1:
+                y2=(y3*x3*(x2-x1)+y1*x1*(x3-x2))/(x2*(x3-x1))
+            df_output.at[i,"Days"]=i
+            df_output.at[i,"Rate"]=y2
+            df_output.at[i,"Discount"]=math.exp(-y2/100*i/365)
+            df_output.loc[i,"Date"]=df_output.loc[1,"Date"]+ dateutil.relativedelta.relativedelta(days=np.int(i-df_output.loc[1,"Days"]))
+    return df_output
+    print(method)
+####################################### 
+#df_input=df_sofr
+#date=pd.Timestamp("2020/11/30")
+#method=1
+def interpolate_single(df_input,date,method):
+    start_date=df_input.at[0,"Date"]-pd.Timedelta(days=df_input.at[0,"Days"])
+    days=date-start_date
+    days=days.days
+    if days not in df_input["Days"].values:
+        x2=int(days)
+        x1=int(df_input["Days"][bisect_left(df_input["Days"], days) - 1])
+        x3=int(df_input["Days"][bisect_right(df_input["Days"], days)])
+        y1=float(df_input["Rate"][bisect_left(df_input["Days"], days) - 1])
+        y3=float(df_input["Rate"][bisect_right(df_input["Days"], days)])
+        if method == 0:
+            y2=y1+(y3-y1)*(x2-x1)/(x3-x1)
+        if method == 1:
+            y2=(y3*x3*(x2-x1)+y1*x1*(x3-x2))/(x2*(x3-x1))
+        Days=days
+        Rate=y2
+        Discount=math.exp(-y2/100*days/365)
+        output=(Days,Rate,Discount)
+    if days in df_input["Days"].values:
+        Days=df_input.loc[df_input["Days"]==days]["Days"].values[-1]
+        Rate=df_input.loc[df_input["Days"]==days]["Rate"].values[-1]
+        Discount=df_input.loc[df_input["Days"]==days]["Discount"].values[-1]
+        output=(Days,Rate,Discount)
+    return output
+
+# =============================================================================
+# #InputFiles
+# =============================================================================
+df_sofr=pd.read_excel("D:\\Excel暫存\\Revalidation\\CCS\\sofr_feed.xlsx")
+df_nd=pd.read_excel("D:\\Excel暫存\\Revalidation\\NDIRS\\nd_feed.xlsx")
+df_ndirs_raw=pd.read_excel("D:\\Excel暫存\\Revalidation\\NDIRS\\ndirs_feed.xlsx")
+df_float_schedule=pd.read_excel("D:\\Excel暫存\\Revalidation\\NDIRS\\float_schedule.xlsx",usecols=[0,1,2,3,9])
+df_fixed_schedule=pd.read_excel("D:\\Excel暫存\\Revalidation\\NDIRS\\fixed_schedule.xlsx",usecols=[0,1,2,3,9])
+df_ndirs_quote=pd.read_excel("D:\\Excel暫存\\Revalidation\\NDIRS\\ndirs_quote.xlsx")
+
+notional=100000000
+
+initial_rate=0.9
+###6M####
+def swap_value(initial_rate,parameter1,parameter2,rate):
+    df_ndirs=df_ndirs_raw.loc[0:parameter1]
+    df_ndirs['Discount'].iat[-1]=initial_rate
+
+    #load pay and receive schedule
+    df_fixed_leg=df_fixed_schedule.loc[0:parameter2]
+    df_float_leg=df_float_schedule.loc[0:parameter2]
+    ## Float Leg ##
+    for index,row in df_float_leg.iterrows():
+       if index==0:
+           df_float_leg.at[index,"FWD"]=df_ndirs_quote["Rate"][4]/100
+           #df_float_leg.at[index,"Discount_dummy"]=df_interpl_sofr.loc[df_interpl_sofr["Date"]==df_float_leg.loc[index,"End"]]["Discount"].values
+           df_float_leg.at[index,"Discount"]=interpolate_single(df_sofr, df_float_leg.at[index,"End"],1)[2]
+       else:
+           #a=df_interpl_ndirs.loc[df_interpl_ndirs["Date"]==df_float_leg.loc[index,"Start"]]["Discount"].values
+           a=interpolate_single(df_ndirs, df_float_leg.at[index,"Start"],0)[2]
+           #b=df_interpl_ndirs.loc[df_interpl_ndirs["Date"]==df_float_leg.loc[index,"End"]]["Discount"].values
+           b=interpolate_single(df_ndirs, df_float_leg.at[index,"End"],0)[2]
+           t=float(row["IDays"])
+           df_float_leg.at[index,"FWD"]=(a/b-1)*365.0/t
+           df_float_leg.at[index,"Discount"]=interpolate_single(df_sofr, df_float_leg.at[index,"End"],1)[2]
+           #df2=df_interpl_libor.at[df_interpl_libor["Date"]==row['End'],['Discount']]
+    #calculate the fwd libor rate
+    df_float_leg["Payment"]=notional*(df_float_leg["IDays"]*df_float_leg["FWD"]/365.0)*df_float_leg["Discount"]/df_float_leg["FX Rate"]
+
+    
+    ## Fixed Leg ##
+    for index,row in df_fixed_leg.iterrows():
+        df_fixed_leg.at[index,"Discount"]=interpolate_single(df_sofr, df_fixed_leg.at[index,"End"],1)[2]
+        df_fixed_leg.at[index,"Fixed"]=rate/100.0
+    df_fixed_leg["Payment"]=notional*(df_fixed_leg["IDays"]*df_fixed_leg["Fixed"]/365.0)*df_fixed_leg["Discount"]/df_fixed_leg["FX Rate"]    
+
+    Swap_value=-df_float_leg["Payment"].sum()+df_fixed_leg["Payment"].sum()
+    
+    return Swap_value
+
+#swap_value(0.9976,5,1,0.48)
+#initial_rate=0.8816925619997
+#parameter1=14
+#parameter2=59
+#rate=0.839
+for index,row in df_ndirs_quote.iterrows():
+    if index>4:
+        if row["Date"]=="6M":
+            parameter1=index
+            parameter2=1
+            rate=row["Rate"]
+        else: 
+            year_num=int(re.sub("\D" , "", row["Date"]))
+            parameter1=index
+            parameter2=year_num*4-1
+            rate=row["Rate"]
+
+        df=[0.85,1.0]
+        while df[1]-df[0]>=0.00000001:
+            m=(df[0]+df[1])/2
+            if swap_value(df[0],parameter1,parameter2,rate)*swap_value(m,parameter1,parameter2,rate)<0.0:
+                df[1]=m
+            elif swap_value(df[1],parameter1,parameter2,rate)*swap_value(m,parameter1,parameter2,rate)<0.0:
+                df[0]=m
+        df_ndirs_raw["Discount"].iat[index]=m      
+        df_ndirs_raw["Rate"].iat[index]=math.log(df_ndirs_raw["Discount"].iat[index])/(-df_ndirs_raw["Days"].iat[index]/365)*100
